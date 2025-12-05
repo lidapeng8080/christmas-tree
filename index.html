@@ -3,17 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>WeChat Christmas Tree</title>
+    <title>Luxury Christmas Tree</title>
     <style>
         body, html { 
             margin: 0; padding: 0; width: 100%; height: 100%; 
             overflow: hidden; background-color: #010201; 
-            font-family: -apple-system, sans-serif;
-            touch-action: none; -webkit-user-select: none;
+            font-family: -apple-system, "Microsoft YaHei", sans-serif;
+            touch-action: none; /* 关键：防止手机端下拉刷新打断体验 */
         }
         
         #canvas-container { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2; }
         
+        /* 视频层 (AR模式背景) */
         #video-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             z-index: 0; display: none; background: #000;
@@ -24,36 +25,49 @@
             transform: scaleX(-1); display: block;
         }
 
-        .wx-btn {
+        /* 按钮样式适配 PC 和 手机 */
+        .ui-btn {
             position: absolute; bottom: 40px; 
-            padding: 12px 20px;
-            background: rgba(255, 255, 255, 0.15); 
-            border: 1px solid rgba(255, 215, 0, 0.3);
-            color: #ffd700; border-radius: 8px; 
+            padding: 12px 24px;
+            background: rgba(255, 255, 255, 0.1); 
+            border: 1px solid rgba(255, 215, 0, 0.4);
+            color: #ffd700; border-radius: 30px; 
             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-            font-size: 14px; font-weight: 600;
-            z-index: 20; pointer-events: auto;
-            transition: all 0.2s;
+            font-size: 14px; font-weight: bold; cursor: pointer;
+            z-index: 20; transition: all 0.3s;
+            user-select: none;
         }
-        .wx-btn:active { background: rgba(255, 215, 0, 0.3); transform: scale(0.95); }
-        /* 禁用状态 */
-        .wx-btn.disabled { opacity: 0.5; background: rgba(100,100,100,0.3); color: #aaa; }
+        .ui-btn:hover { background: rgba(255, 215, 0, 0.2); box-shadow: 0 0 15px rgba(255, 215, 0, 0.3); }
+        .ui-btn:active { transform: scale(0.95); }
+        .ui-btn.disabled { opacity: 0.5; cursor: not-allowed; background: #333; border-color: #555; color: #888; }
 
-        #btn-ar { left: 20px; }
-        #btn-photo { right: 20px; }
+        #btn-ar { left: 50%; transform: translateX(-140%); }
+        #btn-photo { right: 50%; transform: translateX(140%); }
+        
+        /* 手机端布局调整 */
+        @media (max-width: 600px) {
+            #btn-ar { left: 20px; transform: none; }
+            #btn-photo { right: 20px; transform: none; }
+        }
+
         #file-input { display: none; }
 
+        /* 加载页样式优化 */
         #loader {
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: #d4af37; font-size: 14px; z-index: 30; pointer-events: none;
-            text-align: center; letter-spacing: 1px; width: 100%;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #020502; z-index: 999;
+            display: flex; flex-direction: column; 
+            align-items: center; justify-content: center;
+            color: #d4af37; transition: opacity 0.5s;
         }
+        .loader-text { font-size: 16px; margin-bottom: 10px; letter-spacing: 2px; }
+        .loader-sub { font-size: 12px; color: #666; }
+        .error-msg { color: #ff4444; margin-top: 20px; font-size: 12px; max-width: 80%; text-align: center; }
 
         #tips {
-            position: fixed; top: 100px; width: 100%; text-align: center;
-            color: rgba(255, 255, 255, 0.6); font-size: 13px; z-index: 10;
-            pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+            position: fixed; top: 15%; width: 100%; text-align: center;
+            color: rgba(255, 255, 255, 0.7); font-size: 14px; z-index: 10;
+            pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
             opacity: 0; transition: opacity 0.5s;
         }
     </style>
@@ -61,26 +75,41 @@
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
                 "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
             }
         }
     </script>
+    
+    <script>
+        window.addEventListener('error', function(e) {
+            const loader = document.getElementById('loader');
+            const errorDiv = document.getElementById('error-log');
+            if(loader && loader.style.display !== 'none') {
+                errorDiv.innerHTML += `加载错误: ${e.message}<br>`;
+            }
+        });
+    </script>
 </head>
 <body>
 
-    <div id="loader">正在加载资源...<br><span style="font-size:12px; opacity:0.7">(若长时间无响应请刷新)</span></div>
-    <div id="tips">长按照片可放大查看</div>
+    <div id="loader">
+        <div class="loader-text">正在启动引擎...</div>
+        <div class="loader-sub">首次加载可能需要 10-20 秒</div>
+        <div id="error-log" class="error-msg"></div>
+    </div>
+    
+    <div id="tips">💻 鼠标悬停 / 📱 长按 照片可放大</div>
     
     <div id="canvas-container"></div>
     
     <div id="video-container">
-        <video id="webcam" autoplay muted playsinline webkit-playsinline x5-video-player-type="h5-page" x5-playsinline></video>
+        <video id="webcam" autoplay muted playsinline webkit-playsinline></video>
     </div>
 
-    <button id="btn-ar" class="wx-btn disabled">⏳ AI 组件加载中...</button>
-    <button id="btn-photo" class="wx-btn">📷 上传照片</button>
+    <button id="btn-ar" class="ui-btn disabled">⏳ AI组件加载中...</button>
+    <button id="btn-photo" class="ui-btn">📷 换照片</button>
     <input type="file" id="file-input" multiple accept="image/*">
 
     <script type="module">
@@ -92,6 +121,7 @@
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
         import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
+        // --- 配置 ---
         const CONFIG = {
             particleCount: 15000,
             particleSize: 0.08,
@@ -102,6 +132,7 @@
             photoCount: 36
         };
 
+        // --- 变量 ---
         let scene, camera, renderer, particles, geometry, material;
         let controls, composer, bloomPass;
         let luxuryGroup, foliageSystem, spiralMesh, spiralMaterial, starMesh, starMaterial, starLight;
@@ -126,14 +157,15 @@
             'https://images.unsplash.com/photo-1537151608828-ea2b11777ee8?w=400&q=80'
         ];
 
-        // 核心修复：设置超时强制隐藏 Loader，防止网络卡死
+        // 超时保护：5秒后无论如何进入场景（防止AI加载卡死）
         setTimeout(() => {
             const loader = document.getElementById('loader');
-            if (loader && loader.style.display !== 'none') {
-                loader.style.display = 'none';
-                console.log("Force hiding loader due to timeout");
+            if (loader && loader.style.opacity !== '0') {
+                console.log("Loading timeout, forcing entry...");
+                loader.style.opacity = '0';
+                setTimeout(() => { loader.style.display = 'none'; }, 500);
             }
-        }, 5000); // 5秒后强制进入
+        }, 8000);
 
         init();
 
@@ -144,16 +176,19 @@
                 scene = new THREE.Scene();
                 scene.background = new THREE.Color(0x010201);
 
-                camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
-                camera.position.set(0, 2, 28);
+                // 调整摄像机：PC端视野稍微广一点
+                camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.set(0, 3, 30);
 
                 renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                // 智能设置像素比：电脑用1，手机最高用2（防止发热）
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, (window.innerWidth < 600 ? 2 : 1)));
                 renderer.toneMapping = THREE.ACESFilmicToneMapping;
                 renderer.toneMappingExposure = 0.8;
                 container.appendChild(renderer.domElement);
 
+                // 后期处理
                 const renderScene = new RenderPass(scene, camera);
                 bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
                 bloomPass.threshold = CONFIG.bloomThreshold;
@@ -164,6 +199,7 @@
                 composer.addPass(renderScene);
                 composer.addPass(bloomPass);
 
+                // HDRI 环境光
                 new RGBELoader()
                     .setPath('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/equirectangular/')
                     .load('royal_esplanade_1k.hdr', function (texture) {
@@ -171,47 +207,53 @@
                         scene.environment = texture;
                     });
 
+                // 控制器：兼容鼠标和触摸
                 controls = new OrbitControls(camera, renderer.domElement);
                 controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
                 controls.autoRotate = true;
                 controls.autoRotateSpeed = 0.5;
                 controls.enableZoom = true;
-                controls.enablePan = false;
+                controls.minDistance = 5;
+                controls.maxDistance = 100;
 
                 createParticles();
                 createLuxuryTree();
                 createPhotoCloud();
-                
                 updateShape('圣诞树');
                 
                 window.addEventListener('resize', onWindowResize);
-                renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
-                renderer.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
                 
+                // 交互事件监听
+                window.addEventListener('mousemove', onMouseMove);
+                window.addEventListener('touchmove', onTouchMove, { passive: false });
+                window.addEventListener('touchstart', onTouchStart, { passive: false });
+                
+                // 按钮绑定
                 document.getElementById('btn-ar').addEventListener('click', toggleARMode);
                 const uploadBtn = document.getElementById('btn-photo');
                 const fileInput = document.getElementById('file-input');
                 uploadBtn.addEventListener('click', () => fileInput.click());
                 fileInput.addEventListener('change', handlePhotoUpload);
 
-                // 核心修复：场景初始化完成后立即隐藏 Loading，不等待 AI
-                document.getElementById('loader').style.display = 'none';
-                showTip();
+                // 立即隐藏加载层（不等待AI）
+                const loader = document.getElementById('loader');
+                loader.style.opacity = '0';
+                setTimeout(() => { loader.style.display = 'none'; showTip(); }, 500);
 
                 animate();
 
-                // 核心修复：AI 模型后台静默加载
+                // 异步加载AI
                 loadAIModel();
 
             } catch (e) {
-                alert("初始化失败: " + e.message);
-                document.getElementById('loader').style.display = 'none';
+                document.getElementById('error-log').innerText = "初始化崩溃: " + e.message;
             }
         }
 
         async function loadAIModel() {
             try {
-                // 尝试加载 AI，如果网络不通会报错，但不影响 3D 显示
+                // 尝试加载 AI
                 const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
                 handLandmarker = await HandLandmarker.createFromOptions(vision, {
                     baseOptions: {
@@ -222,50 +264,51 @@
                     numHands: 1
                 });
                 
-                // 加载成功，更新按钮状态
                 const btnAr = document.getElementById('btn-ar');
-                btnAr.innerText = "🔴 开启 AR 模式";
+                btnAr.innerText = "🔴 开启 AR / 摄像头";
                 btnAr.classList.remove('disabled');
-                console.log("AI Model Loaded");
                 
             } catch (err) {
-                console.warn("AI 模型加载失败 (可能是网络原因):", err);
+                console.warn("AI Load Failed:", err);
                 const btnAr = document.getElementById('btn-ar');
-                btnAr.innerText = "⚠️ AR 不可用";
-                // 不弹窗报错，避免打扰用户看树
+                // 即使AI失败，也可以尝试开启摄像头做纯背景
+                btnAr.innerText = "⚠️ 仅开启摄像头 (无手势)";
+                btnAr.classList.remove('disabled');
+                // 标记一个状态，允许无AI开启
+                CONFIG.noAI = true;
             }
         }
 
         function toggleARMode() {
             const btn = document.getElementById('btn-ar');
-            
-            if (btn.classList.contains('disabled') || btn.innerText.includes('不可用')) {
-                alert("由于网络原因（Google服务连接超时），AR 手势组件无法加载。\n但您仍可欣赏 3D 圣诞树！");
-                return;
-            }
+            if (btn.classList.contains('disabled')) return;
 
             if (CONFIG.mode === '3D') {
-                if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-                    alert("⚠️ 微信限制：必须使用 HTTPS 链接才能开启摄像头。请确保您的部署链接是 https 开头的。");
+                // 检查HTTPS (本地调试除外)
+                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    alert("安全限制：摄像头需要 HTTPS 连接。\n请使用 GitHub Pages 生成的 https 链接访问。");
                     return;
                 }
 
                 CONFIG.mode = 'AR';
                 webcamRunning = true;
                 videoContainer.style.display = 'block';
-                scene.background = null; 
-                controls.autoRotate = false; 
-                btn.innerText = "🔴 关闭 AR";
-                btn.style.background = "rgba(255, 50, 50, 0.3)";
+                scene.background = null; // 透明背景
+                controls.autoRotate = false; // AR模式停止旋转
+                
+                btn.innerText = "🔴 关闭摄像头";
+                btn.style.background = "rgba(255, 50, 50, 0.4)";
 
                 const constraints = { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } };
                 
                 navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
                     video.srcObject = stream;
                     video.play();
-                    video.addEventListener("loadeddata", predictWebcam);
+                    if (!CONFIG.noAI) {
+                        video.addEventListener("loadeddata", predictWebcam);
+                    }
                 }).catch(err => {
-                    alert("无法开启摄像头: " + err.message + "\n请检查手机权限设置。");
+                    alert("无法访问摄像头: " + err.message + "\n(电脑请检查浏览器权限，手机请检查微信权限)");
                     toggleARMode(); // 回退
                 });
 
@@ -275,8 +318,9 @@
                 videoContainer.style.display = 'none';
                 scene.background = new THREE.Color(0x010201);
                 controls.autoRotate = true;
-                btn.innerText = "🔴 开启 AR 模式";
-                btn.style.background = "rgba(255, 255, 255, 0.15)";
+                
+                btn.innerText = CONFIG.noAI ? "⚠️ 仅开启摄像头 (无手势)" : "🔴 开启 AR / 摄像头";
+                btn.style.background = "rgba(255, 255, 255, 0.1)";
                 
                 const stream = video.srcObject;
                 if(stream) stream.getTracks().forEach(track => track.stop());
@@ -303,7 +347,7 @@
                     }
                 }
             }
-            if (webcamRunning) window.requestAnimationFrame(predictWebcam);
+            if (webcamRunning && !CONFIG.noAI) window.requestAnimationFrame(predictWebcam);
         }
 
         // --- 场景构建 ---
@@ -329,7 +373,7 @@
             foliageGeo.setAttribute('position', new THREE.BufferAttribute(foliagePos, 3));
             foliageGeo.setAttribute('color', new THREE.BufferAttribute(foliageColors, 3));
             const foliageMat = new THREE.ShaderMaterial({
-                uniforms: { time: { value: 0 }, pointSize: { value: 4.5 } }, 
+                uniforms: { time: { value: 0 }, pointSize: { value: 4.0 } }, 
                 vertexShader: `uniform float time; uniform float pointSize; attribute vec3 color; varying vec3 vColor; void main() { vColor = color; vec3 pos = position; pos.x += sin(time * 0.5 + pos.y) * 0.05; vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0); gl_PointSize = pointSize * (30.0 / -mvPosition.z); gl_Position = projectionMatrix * mvPosition; }`,
                 fragmentShader: `varying vec3 vColor; void main() { if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard; gl_FragColor = vec4(vColor, 1.0); }`,
                 transparent: true, depthWrite: false, blending: THREE.NormalBlending 
@@ -364,7 +408,7 @@
             const lightMat = new THREE.MeshBasicMaterial({ color: 0xffaa55 }); 
             instancedLights = setupInstancedMesh(lightGeo, lightMat, 600, 0);
 
-            // 3. 螺旋呼吸灯珠
+            // 3. 螺旋呼吸灯珠 (优化)
             const beadCount = 1200; 
             const spiralTurns = 6.5; const spiralHeight = 23; const spiralBaseRadius = 10.5;
             const beadGeo = new THREE.SphereGeometry(0.075, 6, 6); 
@@ -452,6 +496,7 @@
             loadNextFile();
         }
 
+        // --- 交互系统 (PC/手机通用) ---
         function onTouchStart(event) {
             if (event.touches.length > 0) {
                 mouse.x = (event.touches[0].clientX / window.innerWidth) * 2 - 1;
@@ -459,17 +504,20 @@
                 checkIntersection(true); 
             }
         }
-        
         function onTouchMove(event) {
             if (event.touches.length > 0) {
                 mouse.x = (event.touches[0].clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(event.touches[0].clientY / window.innerHeight) * 2 + 1;
             }
         }
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
 
         function checkIntersection(isTap = false) {
             if (!photoGroup.visible) return;
-            raycaster = raycaster || new THREE.Raycaster(); // Ensure init
+            raycaster = raycaster || new THREE.Raycaster();
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(photoObjects);
             
@@ -479,7 +527,9 @@
                     hoveredObject = hitObj; 
                     hoverStartTime = Date.now(); 
                 } 
-                if (isTap || Date.now() - hoverStartTime > 600) {
+                // PC上 300ms, 手机上 600ms 或点击
+                const threshold = (isTap) ? 0 : 300;
+                if (Date.now() - hoverStartTime > threshold) {
                     if (activePhoto !== hitObj.userData.parentGroup) {
                         if (activePhoto) activePhoto.userData.isActive = false;
                         activePhoto = hitObj.userData.parentGroup; activePhoto.userData.isActive = true;
@@ -487,6 +537,7 @@
                 }
             } else {
                 hoveredObject = null;
+                // 点击空白处还原
                 if (isTap && activePhoto) { 
                     activePhoto.userData.isActive = false; 
                     activePhoto = null; 
@@ -547,14 +598,15 @@
             const time = Date.now() * 0.001;
             const dummy = new THREE.Object3D();
 
-            if(!hoveredObject) checkIntersection(); 
+            // 持续检测鼠标悬停（PC端）
+            if(!hoveredObject && !activePhoto) checkIntersection(false); 
 
             if (luxuryGroup.visible) {
                 if (foliageSystem) foliageSystem.material.uniforms.time.value = time;
                 if (starMesh) { starMesh.rotation.y = -time * 0.3; const hue = (time * 0.1) % 1.0; starLight.color.setHSL(hue, 0.7, 0.5); }
                 if (spiralMaterial) { const lightness = 0.4 + Math.sin(time * 3.0) * 0.2; spiralMaterial.color.setHSL(0.08, 1.0, lightness); }
 
-                const explosionFactor = CONFIG.mode === 'AR' ? CONFIG.expansion * 2.0 : 0; // 仅AR模式手势生效
+                const explosionFactor = CONFIG.mode === 'AR' ? CONFIG.expansion * 2.0 : 0; 
                 
                 for(let i=0; i<treeOrnaments.length; i++) {
                     const o = treeOrnaments[i];
@@ -589,7 +641,7 @@
             }
             
             controls.update();
-            if (controls.autoRotate && !activePhoto && CONFIG.mode === '3D') { luxuryGroup.rotation.y += 0.002; }
+            if (controls.autoRotate && !activePhoto && CONFIG.mode === '3D') { luxuryGroup.rotation.y += 0.002; particles.rotation.y += 0.002; }
 
             composer.render();
         }
