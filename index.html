@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>WeChat AR Christmas Tree</title>
+    <style>
+        /* 微信专用重置：禁止回弹效果 */
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background-color: #010201; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            touch-action: none; /* 禁止默认手势 */
+            -webkit-user-select: none; /* 禁止长按选择 */
+        }
+        
+        /* 使用 fixed 布局填满屏幕，避免微信工具栏影响 */
+        #canvas-container { 
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0; 
+            z-index: 2; pointer-events: none; /* 让点击穿透到底层交互 */
+        }
+        
+        /* 视频层：作为背景 */
+        #video-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0; display: none; background: #000;
+        }
+        
+        #webcam { 
+            width: 100%; height: 100%; object-fit: cover; 
+            transform: scaleX(-1); /* 镜像 */
+            display: block;
+        }
+
+        /* 微信风格 UI 按钮 */
+        .wx-btn {
+            position: absolute; bottom: 40px; 
+            padding: 12px 20px;
+            background: rgba(255, 255, 255, 0.15); 
+            border: 1px solid rgba(255, 215, 0, 0.3);
+            color: #ffd700; border-radius: 8px; 
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            font-size: 14px; font-weight: 600;
+            z-index: 20; pointer-events: auto;
+            transition: all 0.2s;
+        }
+        .wx-btn:active { background: rgba(255, 215, 0, 0.3); transform: scale(0.95); }
+
+        #btn-ar { left: 20px; }
+        #btn-photo { right: 20px; }
+        #file-input { display: none; }
+
+        #loader {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #d4af37; font-size: 14px; z-index: 30; pointer-events: none;
+            text-align: center; letter-spacing: 1px; width: 80%;
+        }
+
+        #tips {
+            position: fixed; top: 100px; width: 100%; text-align: center;
+            color: rgba(255, 255, 255, 0.6); font-size: 13px; z-index: 10;
+            pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+            opacity: 0; transition: opacity 0.5s;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">系统初始化中...</div>
+    <div id="tips">长按照片可放大查看</div>
+    
+    <div id="canvas-container"></div>
+    
+    <div id="video-container">
+        <video id="webcam" autoplay muted playsinline webkit-playsinline x5-video-player-type="h5-page" x5-playsinline></video>
+    </div>
+
+    <button id="btn-ar" class="wx-btn">🔴 开启 AR 模式</button>
+    <button id="btn-photo" class="wx-btn">📷 上传照片</button>
+    <input type="file" id="file-input" multiple accept="image/*">
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+
+        // --- 配置 ---
+        const CONFIG = {
+            particleCount: 15000,
+            particleSize: 0.08,
+            mode: '3D', // '3D' or 'AR'
+            bloomThreshold: 0.6,
+            bloomStrength: 1.0,
+            bloomRadius: 0.5,
+            photoCount: 36
+        };
+
+        // --- 变量 ---
+        let scene, camera, renderer, particles, geometry, material;
+        let controls, composer, bloomPass;
+        let luxuryGroup, foliageSystem, spiralMesh, spiralMaterial, starMesh, starMaterial, starLight;
+        let photoGroup, raycaster, mouse = new THREE.Vector2();
+        
+        let instancedGifts, instancedBalls, instancedLights;
+        const treeOrnaments = [];
+        const photoObjects = [];
+        let activePhoto = null;
+        let hoverStartTime = 0;
+        let hoveredObject = null;
+
+        let handLandmarker = undefined;
+        let webcamRunning = false;
+        let lastVideoTime = -1;
+        const video = document.getElementById('webcam');
+        const videoContainer = document.getElementById('video-container');
+
+        // 默认图片
+        const defaultImages = [
+            'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=400&q=80', 
+            'https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=400&q=80', 
+            'https://images.unsplash.com/photo-1537151608828-ea2b11777ee8?w=400&q=80'
+        ];
+
+        init();
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x010201);
+
+            // 针对手机竖屏优化摄像机视角
+            camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, 28); // 稍微抬高一点视角
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // 微信内限制像素比，防止发热
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 0.8;
+            container.appendChild(renderer.domElement);
+
+            // 后期处理
+            const renderScene = new RenderPass(scene, camera);
+            bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = CONFIG.bloomThreshold;
+            bloomPass.strength = CONFIG.bloomStrength;
+            bloomPass.radius = CONFIG.bloomRadius;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // 环境光
+            new RGBELoader()
+                .setPath('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/equirectangular/')
+                .load('royal_esplanade_1k.hdr', function (texture) {
+                    texture.mapping = THREE.EquirectangularReflectionMapping;
+                    scene.environment = texture;
+                });
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+            controls.enableZoom = true;
+            controls.enablePan = false;
+
+            createParticles();
+            createLuxuryTree();
+            createPhotoCloud();
+            
+            // 初始化显示圣诞树
+            updateShape('圣诞树');
+            
+            // 事件监听
+            window.addEventListener('resize', onWindowResize);
+            
+            // 触摸事件绑定到 renderer.domElement，而不是 window，防止误触
+            renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
+            renderer.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
+            
+            // 按钮事件
+            document.getElementById('btn-ar').addEventListener('click', toggleARMode);
+            const uploadBtn = document.getElementById('btn-photo');
+            const fileInput = document.getElementById('file-input');
+            uploadBtn.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', handlePhotoUpload);
+
+            animate();
+
+            // AI模型预加载
+            setupHandLandmarker().then(() => {
+                document.getElementById('loader').style.display = 'none';
+                showTip();
+            }).catch(err => {
+                console.error(err);
+                document.getElementById('loader').innerText = "AI 组件加载失败，仅限 3D 浏览";
+                setTimeout(() => { document.getElementById('loader').style.display = 'none'; }, 2000);
+            });
+        }
+
+        // --- AR / 摄像头逻辑 ---
+        async function setupHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+        }
+
+        function toggleARMode() {
+            const btn = document.getElementById('btn-ar');
+            
+            if (CONFIG.mode === '3D') {
+                // 尝试开启 AR
+                if (!handLandmarker) { alert("AI 引擎尚未就绪，请稍等..."); return; }
+                
+                // 检查 HTTPS
+                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    alert("⚠️ 微信安全限制：摄像头仅在 HTTPS 网站下可用。");
+                    return;
+                }
+
+                CONFIG.mode = 'AR';
+                webcamRunning = true;
+                videoContainer.style.display = 'block';
+                scene.background = null; // 透明背景
+                controls.autoRotate = false; // 停止自动旋转方便交互
+                btn.innerText = "🔴 关闭 AR";
+                btn.style.background = "rgba(255, 50, 50, 0.3)";
+
+                const constraints = { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } };
+                
+                navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                    video.srcObject = stream;
+                    video.play();
+                    video.addEventListener("loadeddata", predictWebcam);
+                }).catch(err => {
+                    alert("无法开启摄像头: " + err.message + "\n请检查微信权限设置。");
+                    // 回退到 3D 模式
+                    toggleARMode(); 
+                });
+
+            } else {
+                // 关闭 AR
+                CONFIG.mode = '3D';
+                webcamRunning = false;
+                videoContainer.style.display = 'none';
+                scene.background = new THREE.Color(0x010201);
+                controls.autoRotate = true;
+                btn.innerText = "🔴 开启 AR 模式";
+                btn.style.background = "rgba(255, 255, 255, 0.15)";
+                
+                const stream = video.srcObject;
+                if(stream) stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+        }
+
+        async function predictWebcam() {
+            if (lastVideoTime !== video.currentTime && CONFIG.mode === 'AR') {
+                lastVideoTime = video.currentTime;
+                const startTimeMs = performance.now();
+                if (handLandmarker) {
+                    const result = handLandmarker.detectForVideo(video, startTimeMs);
+                    if (result.landmarks.length > 0) {
+                        // 简单的手势检测：拇指和食指距离控制扩散
+                        const landmarks = result.landmarks[0];
+                        const thumb = landmarks[4];
+                        const index = landmarks[8];
+                        const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
+                        
+                        // 映射距离到扩散参数
+                        let val = (dist - 0.05) * 5; 
+                        val = Math.max(0, Math.min(1, val));
+                        CONFIG.expansion += (val - CONFIG.expansion) * 0.1;
+                    } else {
+                         CONFIG.expansion += (0 - CONFIG.expansion) * 0.05;
+                    }
+                }
+            }
+            if (webcamRunning) window.requestAnimationFrame(predictWebcam);
+        }
+
+        // --- 场景构建 ---
+        function createLuxuryTree() {
+            luxuryGroup = new THREE.Group();
+            luxuryGroup.visible = false;
+            scene.add(luxuryGroup);
+
+            // 1. 针叶
+            const foliageCount = 20000; // 微信端稍微减少粒子数优化性能
+            const foliageGeo = new THREE.BufferGeometry();
+            const foliagePos = new Float32Array(foliageCount * 3);
+            const foliageColors = new Float32Array(foliageCount * 3);
+            const baseColor = new THREE.Color(0x00260e); const tipColor = new THREE.Color(0x006633); 
+            for (let i = 0; i < foliageCount; i++) {
+                const h = Math.random(); const angle = Math.random() * Math.PI * 2; 
+                const r = (1 - h) * 9 * Math.sqrt(Math.random()); 
+                const x = Math.cos(angle) * r; const y = h * 22 - 11; const z = Math.sin(angle) * r;
+                foliagePos[i*3] = x; foliagePos[i*3+1] = y; foliagePos[i*3+2] = z;
+                const mixedColor = baseColor.clone().lerp(tipColor, Math.random() * 0.6);
+                foliageColors[i*3] = mixedColor.r; foliageColors[i*3+1] = mixedColor.g; foliageColors[i*3+2] = mixedColor.b;
+            }
+            foliageGeo.setAttribute('position', new THREE.BufferAttribute(foliagePos, 3));
+            foliageGeo.setAttribute('color', new THREE.BufferAttribute(foliageColors, 3));
+            const foliageMat = new THREE.ShaderMaterial({
+                uniforms: { time: { value: 0 }, pointSize: { value: 4.5 } }, // 手机端粒子稍大一点可见度更高
+                vertexShader: `uniform float time; uniform float pointSize; attribute vec3 color; varying vec3 vColor; void main() { vColor = color; vec3 pos = position; pos.x += sin(time * 0.5 + pos.y) * 0.05; vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0); gl_PointSize = pointSize * (30.0 / -mvPosition.z); gl_Position = projectionMatrix * mvPosition; }`,
+                fragmentShader: `varying vec3 vColor; void main() { if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard; gl_FragColor = vec4(vColor, 1.0); }`,
+                transparent: true, depthWrite: false, blending: THREE.NormalBlending 
+            });
+            foliageSystem = new THREE.Points(foliageGeo, foliageMat);
+            foliageSystem.frustumCulled = false; 
+            luxuryGroup.add(foliageSystem);
+
+            // 2. 装饰物
+            const setupInstancedMesh = (geo, mat, count, weightType) => {
+                const mesh = new THREE.InstancedMesh(geo, mat, count);
+                const dummy = new THREE.Object3D();
+                for(let i=0; i<count; i++) {
+                    const h = Math.random(); const angle = Math.random() * Math.PI * 2; const r = ((1 - h) * 9) + 0.3; 
+                    const x = Math.cos(angle) * r; const y = h * 22 - 11; const z = Math.sin(angle) * r;
+                    dummy.position.set(x, y, z);
+                    const s = Math.random() * 0.5 + 0.5;
+                    dummy.scale.set(s, s, s); dummy.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, 0); dummy.updateMatrix();
+                    mesh.setMatrixAt(i, dummy.matrix);
+                    treeOrnaments.push({ mesh: mesh, index: i, basePos: new THREE.Vector3(x, y, z), baseScale: s, weightType: weightType, phase: Math.random() * Math.PI * 2, currentPos: new THREE.Vector3(x, y, z) });
+                }
+                mesh.instanceMatrix.needsUpdate = true; mesh.frustumCulled = false; luxuryGroup.add(mesh);
+                return mesh;
+            };
+            const boxGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+            const boxMat = new THREE.MeshStandardMaterial({ color: 0x550000, roughness: 0.3, metalness: 0.7, envMapIntensity: 2.0 }); 
+            instancedGifts = setupInstancedMesh(boxGeo, boxMat, 80, 2);
+            const ballGeo = new THREE.SphereGeometry(0.35, 16, 16);
+            const ballMat = new THREE.MeshStandardMaterial({ color: 0xDDAA00, roughness: 0.1, metalness: 0.9, envMapIntensity: 2.5 }); 
+            instancedBalls = setupInstancedMesh(ballGeo, ballMat, 300, 1);
+            const lightGeo = new THREE.SphereGeometry(0.12, 8, 8);
+            const lightMat = new THREE.MeshBasicMaterial({ color: 0xffaa55 }); 
+            instancedLights = setupInstancedMesh(lightGeo, lightMat, 600, 0);
+
+            // 3. 螺旋呼吸灯珠 (优化分段数适应手机)
+            const beadCount = 1200; 
+            const spiralTurns = 6.5; const spiralHeight = 23; const spiralBaseRadius = 10.5;
+            const beadGeo = new THREE.SphereGeometry(0.075, 6, 6); 
+            spiralMaterial = new THREE.MeshBasicMaterial({ color: 0xcc8800 }); 
+            spiralMesh = new THREE.InstancedMesh(beadGeo, spiralMaterial, beadCount);
+            const dummyBead = new THREE.Object3D();
+            for(let i = 0; i < beadCount; i++) {
+                const ratio = i / beadCount; const angle = ratio * Math.PI * 2 * spiralTurns;
+                const y = (ratio * spiralHeight) - 11.5; const r = (1 - ratio * 0.9) * spiralBaseRadius; 
+                const x = Math.cos(angle) * r; const z = Math.sin(angle) * r;
+                dummyBead.position.set(x, y, z); dummyBead.updateMatrix(); spiralMesh.setMatrixAt(i, dummyBead.matrix);
+                treeOrnaments.push({ mesh: spiralMesh, index: i, basePos: new THREE.Vector3(x, y, z), baseScale: 1.0, weightType: 0, phase: angle, currentPos: new THREE.Vector3(x, y, z) });
+            }
+            spiralMesh.instanceMatrix.needsUpdate = true; spiralMesh.frustumCulled = false; luxuryGroup.add(spiralMesh);
+
+            // 4. 水晶顶星
+            const starShape = new THREE.Shape();
+            const outerRadius = 1.5; const innerRadius = 0.6; const starPoints = 5;
+            for (let i = 0; i < starPoints * 2; i++) {
+                const angle = (i * Math.PI) / starPoints; const radius = i % 2 === 0 ? outerRadius : innerRadius;
+                const x = Math.cos(angle) * radius; const y = Math.sin(angle) * radius;
+                if(i===0) starShape.moveTo(x, y); else starShape.lineTo(x, y);
+            }
+            starShape.closePath();
+            const starGeo = new THREE.ExtrudeGeometry(starShape, { depth: 0.5, bevelEnabled: true, bevelThickness: 0.2, bevelSize: 0.15, bevelSegments: 2 });
+            starGeo.center(); 
+            starMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0xffffff, metalness: 0.1, roughness: 0.02, transmission: 1.0, ior: 2.3, thickness: 1.5,
+                envMapIntensity: 5.0, clearcoat: 1.0, side: THREE.DoubleSide, emissive: 0x333333, emissiveIntensity: 0.2 
+            });
+            starMesh = new THREE.Mesh(starGeo, starMaterial); starMesh.position.set(0, 12, 0); luxuryGroup.add(starMesh);
+            starLight = new THREE.PointLight(0xffffff, 0.6, 25); starLight.position.set(0, 12, 0); luxuryGroup.add(starLight);
+        }
+
+        function createPhotoCloud() {
+            photoGroup = new THREE.Group();
+            luxuryGroup.add(photoGroup);
+            const loader = new THREE.TextureLoader();
+            const frameGeo = new THREE.PlaneGeometry(0.8, 1.0); 
+            const borderGeo = new THREE.PlaneGeometry(0.9, 1.1); 
+            const photoCount = CONFIG.photoCount;
+            for (let i = 0; i < photoCount; i++) {
+                const imgUrl = defaultImages[i % defaultImages.length];
+                const photoContainer = new THREE.Group();
+                const borderMat = new THREE.MeshStandardMaterial({ color: 0xccaa00, metalness: 0.9, roughness: 0.3 }); 
+                const borderMesh = new THREE.Mesh(borderGeo, borderMat);
+                borderMesh.position.z = -0.01; photoContainer.add(borderMesh);
+                loader.load(imgUrl, (tex) => {
+                    tex.colorSpace = THREE.SRGBColorSpace;
+                    const photoMat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+                    const photoMesh = new THREE.Mesh(frameGeo, photoMat);
+                    photoMesh.userData = { isPhoto: true, parentGroup: photoContainer };
+                    photoContainer.add(photoMesh);
+                    photoObjects.push(photoMesh);
+                });
+                const h = Math.random() * 0.8 + 0.1; 
+                const angle = (i / photoCount) * Math.PI * 2 + Math.random(); 
+                const treeRadiusAtHeight = (1 - h) * 9; 
+                const r = treeRadiusAtHeight + 1.5; 
+                const x = Math.cos(angle) * r; const y = h * 22 - 11; const z = Math.sin(angle) * r;
+                photoContainer.position.set(x, y, z);
+                photoContainer.lookAt(0, y, 0); photoContainer.rotateY(Math.PI); photoContainer.rotateZ((Math.random()-0.5) * 0.2); 
+                photoContainer.userData = { originalPos: new THREE.Vector3(x, y, z), originalRot: photoContainer.rotation.clone(), phase: Math.random() * Math.PI * 2, isActive: false };
+                photoGroup.add(photoContainer);
+            }
+        }
+
+        // --- 交互逻辑 ---
+        function handlePhotoUpload(e) {
+            const files = e.target.files; if (!files.length) return;
+            let fileIdx = 0; const reader = new FileReader();
+            const loadNextFile = () => {
+                if (fileIdx >= files.length) return; 
+                const file = files[fileIdx];
+                reader.onload = (event) => {
+                    const img = new Image(); img.src = event.target.result;
+                    img.onload = () => {
+                        const texture = new THREE.Texture(img); texture.colorSpace = THREE.SRGBColorSpace; texture.needsUpdate = true;
+                        const targetMesh = photoObjects[fileIdx % photoObjects.length];
+                        if (targetMesh) { targetMesh.material.map = texture; targetMesh.material.needsUpdate = true; }
+                        fileIdx++; loadNextFile(); 
+                    };
+                };
+                reader.readAsDataURL(file);
+            };
+            loadNextFile();
+        }
+
+        function onTouchStart(event) {
+            if (event.touches.length > 0) {
+                mouse.x = (event.touches[0].clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.touches[0].clientY / window.innerHeight) * 2 + 1;
+                checkIntersection(true); // 立即检测
+            }
+        }
+        
+        function onTouchMove(event) {
+            if (event.touches.length > 0) {
+                mouse.x = (event.touches[0].clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.touches[0].clientY / window.innerHeight) * 2 + 1;
+            }
+        }
+
+        function checkIntersection(isTap = false) {
+            if (!photoGroup.visible) return;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(photoObjects);
+            
+            if (intersects.length > 0) {
+                const hitObj = intersects[0].object;
+                if (hoveredObject !== hitObj) { 
+                    hoveredObject = hitObj; 
+                    hoverStartTime = Date.now(); 
+                } 
+                
+                // 点击或长按600ms
+                if (isTap || Date.now() - hoverStartTime > 600) {
+                    if (activePhoto !== hitObj.userData.parentGroup) {
+                        if (activePhoto) activePhoto.userData.isActive = false;
+                        activePhoto = hitObj.userData.parentGroup; activePhoto.userData.isActive = true;
+                        // Haptic feedback (if supported by browser/device)
+                        if (window.navigator && window.navigator.vibrate) window.navigator.vibrate(50);
+                    }
+                }
+            } else {
+                hoveredObject = null;
+                // 点击空白处取消激活
+                if (isTap && activePhoto) { 
+                    activePhoto.userData.isActive = false; 
+                    activePhoto = null; 
+                }
+            }
+        }
+
+        function createParticles() {
+            geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(CONFIG.particleCount * 3);
+            const targets = new Float32Array(CONFIG.particleCount * 3);
+            for (let i = 0; i < CONFIG.particleCount * 3; i++) { positions[i] = (Math.random() - 0.5) * 50; targets[i] = positions[i]; }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('target', new THREE.BufferAttribute(targets, 3));
+            material = new THREE.PointsMaterial({
+                size: CONFIG.particleSize, color: new THREE.Color(CONFIG.color), transparent: true, opacity: 0.8,
+                blending: THREE.AdditiveBlending, depthWrite: false
+            });
+            particles = new THREE.Points(geometry, material); particles.frustumCulled = false; scene.add(particles);
+        }
+
+        function updateShape(shapeName) {
+            const arr = new Float32Array(CONFIG.particleCount * 3);
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                let x, y, z; const idx = i * 3;
+                if (shapeName === '圣诞树') {
+                    const h = Math.random(); const angle = Math.random() * Math.PI * 2; const r = (1 - h) * 8;
+                    x = Math.cos(angle) * r; y = h * 22 - 11; z = Math.sin(angle) * r;
+                } else {
+                    x = (Math.random()-0.5)*50; y = (Math.random()-0.5)*50; z = (Math.random()-0.5)*50;
+                }
+                arr[idx] = x; arr[idx+1] = y; arr[idx+2] = z;
+            }
+            geometry.attributes.target.array.set(arr);
+            geometry.attributes.target.needsUpdate = true;
+            
+            if (shapeName === '圣诞树') {
+                material.opacity = 0.02; material.color.setHex(0x002200); luxuryGroup.visible = true; photoGroup.visible = true;
+                treeOrnaments.forEach(o => { o.currentPos.copy(o.basePos); });
+            }
+        }
+
+        function showTip() {
+            const tip = document.getElementById('tips');
+            tip.style.opacity = 1;
+            setTimeout(() => { tip.style.opacity = 0; }, 5000);
+        }
+
+        function onWindowResize() { 
+            camera.aspect = window.innerWidth / window.innerHeight; 
+            camera.updateProjectionMatrix(); 
+            renderer.setSize(window.innerWidth, window.innerHeight); 
+            composer.setSize(window.innerWidth, window.innerHeight); 
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = Date.now() * 0.001;
+            const dummy = new THREE.Object3D();
+
+            if(!hoveredObject) checkIntersection(); // 持续检测（用于长按逻辑）
+
+            if (luxuryGroup.visible) {
+                if (foliageSystem) foliageSystem.material.uniforms.time.value = time;
+                if (starMesh) { starMesh.rotation.y = -time * 0.3; const hue = (time * 0.1) % 1.0; starLight.color.setHSL(hue, 0.7, 0.5); }
+                if (spiralMaterial) { const lightness = 0.4 + Math.sin(time * 3.0) * 0.2; spiralMaterial.color.setHSL(0.08, 1.0, lightness); }
+
+                const explosionFactor = CONFIG.expansion * 2.0;
+                for(let i=0; i<treeOrnaments.length; i++) {
+                    const o = treeOrnaments[i];
+                    const targetX = o.basePos.x * (1 + explosionFactor); const targetY = o.basePos.y * (1 + explosionFactor); const targetZ = o.basePos.z * (1 + explosionFactor);
+                    let floatSpeed = 1.0; let floatAmp = 0.1;
+                    if(o.weightType === 2) { floatSpeed = 0.5; floatAmp = 0.02; } if(o.weightType === 1) { floatSpeed = 1.2; floatAmp = 0.05; } if(o.weightType === 0) { floatSpeed = 2.0; floatAmp = 0.08; } 
+                    const floatY = Math.sin(time * floatSpeed + o.phase) * floatAmp;
+                    o.currentPos.x += (targetX - o.currentPos.x) * 0.05; o.currentPos.y += ((targetY + floatY) - o.currentPos.y) * 0.05; o.currentPos.z += (targetZ - o.currentPos.z) * 0.05;
+                    dummy.position.copy(o.currentPos); dummy.scale.setScalar(o.baseScale);
+                    if (o.weightType === 2) dummy.rotation.set(0, time * 0.2 + o.phase, 0); else dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                    if (o.weightType === 2) instancedGifts.setMatrixAt(o.index, dummy.matrix); else if (o.weightType === 1) instancedBalls.setMatrixAt(o.index, dummy.matrix); else if (o.weightType === 0) instancedLights.setMatrixAt(o.index, dummy.matrix); else if (o.mesh === spiralMesh) spiralMesh.setMatrixAt(o.index, dummy.matrix);
+                }
+                instancedGifts.instanceMatrix.needsUpdate = true; instancedBalls.instanceMatrix.needsUpdate = true; instancedLights.instanceMatrix.needsUpdate = true; if(spiralMesh) spiralMesh.instanceMatrix.needsUpdate = true;
+                
+                if (photoGroup) {
+                    photoGroup.children.forEach(photo => {
+                        if (photo.userData.isActive) {
+                            const cameraDir = new THREE.Vector3(); camera.getWorldDirection(cameraDir);
+                            const targetPos = camera.position.clone().add(cameraDir.multiplyScalar(8)); 
+                            photo.position.lerp(targetPos, 0.05); photo.scale.lerp(new THREE.Vector3(5.0, 5.0, 5.0), 0.05); 
+                            photo.lookAt(camera.position);
+                        } else {
+                            const original = photo.userData.originalPos; const t = time + photo.userData.phase;
+                            const floatY = Math.sin(t * 0.5) * 0.2;
+                            photo.position.lerp(new THREE.Vector3(original.x, original.y + floatY, original.z), 0.05);
+                            photo.scale.lerp(new THREE.Vector3(1, 1, 1), 0.05);
+                            const dummyObj = new THREE.Object3D(); dummyObj.position.copy(photo.position); dummyObj.lookAt(0, original.y, 0); dummyObj.rotateY(Math.PI); 
+                            photo.quaternion.slerp(dummyObj.quaternion, 0.1);
+                        }
+                    });
+                }
+            }
+            
+            // 简单的粒子跟随（不morph，提升性能）
+            const positions = geometry.attributes.position.array; const targets = geometry.attributes.target.array;
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const ix = i * 3; const iy = i * 3 + 1; const iz = i * 3 + 2; let tx = targets[ix], ty = targets[iy], tz = targets[iz];
+                if (CONFIG.expansion > 0.01) { tx *= (1 + CONFIG.expansion * 2); ty *= (1 + CONFIG.expansion * 2); tz *= (1 + CONFIG.expansion * 2); }
+                positions[ix] += (tx - positions[ix]) * 0.1; positions[iy] += (ty - positions[iy]) * 0.1; positions[iz] += (tz - positions[iz]) * 0.1;
+            }
+            geometry.attributes.position.needsUpdate = true;
+
+            controls.update();
+            if (controls.autoRotate && !activePhoto) { luxuryGroup.rotation.y += 0.002; particles.rotation.y += 0.002; }
+
+            composer.render();
+        }
+    </script>
+</body>
+</html>
